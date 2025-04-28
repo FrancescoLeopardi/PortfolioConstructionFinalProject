@@ -74,40 +74,36 @@ library(slider)
 
 # We already have 'monthly_excess' with symbol, month, excess_ret
 
-# Arrange properly
 monthly_excess <- monthly_excess |> arrange(symbol, month)
 
-# Calculate rolling 11 months cumulative return (months 2-12, skip the last month)
+# Calculate rolling 12 months cumulative return (T-2 to T-13)
 momentum_signal <- monthly_excess |> 
   group_by(symbol) |> 
   mutate(
-    # sliding window: past 11 months before the last 1 month
     cum_return = slide_index_dbl(
       .x = excess_ret,
       .i = month,
       .f = ~ prod(1 + .x) - 1,
-      .before = 12,  # 13 months back (0-based indexing)
-      .complete = TRUE  # Only keep if full history is available
+      .before = 11,  # 12 months total
+      .complete = TRUE
     )
   ) |> 
   ungroup()
 
-# Filter out the months where we were supposed to skip the most recent 1 month
 momentum_signal <- momentum_signal |> 
   group_by(symbol) |> 
-  mutate(formation_month = lead(month, 1)) |>  # Move the window forward by 1 month
+  mutate(formation_month = lead(month, 1)) |> 
   ungroup()
 
-# Only keep relevant columns
 momentum_signal <- momentum_signal |> 
   select(symbol, formation_month, cum_return) |> 
   filter(!is.na(formation_month))
 
-# View
 head(momentum_signal)
 
 
-# Rank and assign weights
+
+'''# Rank and assign weights
 top3_weights <- momentum_signal |> 
   group_by(formation_month) |> 
   arrange(desc(cum_return)) |> 
@@ -118,7 +114,38 @@ top3_weights <- momentum_signal |>
   ungroup()
 
 # Check
-head(top3_weights)
+head(top3_weights)'''
+
+
+# Rank and assign weights for top 10%
+top10pct_weights <- momentum_signal |> 
+  group_by(formation_month) |> 
+  arrange(desc(cum_return)) |> 
+  mutate(
+    rank = row_number(),
+    n_stocks = n(),  # total number of stocks in that month
+    threshold = floor(0.10 * n_stocks),  # top 10% (round down)
+    weight = if_else(rank <= threshold, 1 / threshold, 0)
+  ) |> 
+  ungroup() |> 
+  select(symbol, formation_month, cum_return, rank, weight)
+
+head(top10pct_weights)
+
+# # stocks are selected each month
+top10pct_selected_count <- top10pct_weights |> 
+  filter(weight > 0) |> 
+  group_by(formation_month) |> 
+  summarise(n_selected = n()) |> 
+  arrange(formation_month)
+
+print(top10pct_selected_count)
+
+
+
+
+
+
 
 
 
