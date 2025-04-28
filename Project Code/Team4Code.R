@@ -376,7 +376,111 @@ print(betas[2])           # Beta to SMB
 print(betas[3])           # Beta to HML)
 
 
+####################### Winners&Losers SIGNAL #######################
 
+
+print(head(ff))
+
+print(head(returns_with_rf))
+
+#daily excess
+daily_excess 
+
+# Monthly excess
+monthly_excess
+
+# Calculate the rolling 36 month performance for each stock
+
+#monthly excess
+monthly_excess <- group_by(returns_with_rf, symbol, month)
+monthly_excess <- summarise(monthly_excess,
+                            excess_ret = prod(1 + excess_ret) - 1,
+                            .groups = "drop")
+monthly_excess <- arrange(monthly_excess, symbol, month)
+monthly_excess
+
+rolling_returns <- monthly_excess %>%
+  group_by(symbol) %>%
+  arrange(month) %>%
+  mutate(
+    rolling_cum_return = rollapply(
+      data = 1 + excess_ret,
+      width = 36,
+      FUN = function(x) prod(x, na.rm = FALSE) - 1,
+      align = "right",
+      fill = NA,
+      partial = FALSE
+    )
+  ) %>%
+  ungroup()
+
+rolling_returns <- group_by(rolling_returns, symbol, month)
+rolling_returns <- arrange(rolling_returns, symbol, month)
+rolling_returns <- select(rolling_returns, symbol, month, rolling_cum_return)
+
+# Rearrange for each month
+rolling_returns <- arrange(rolling_returns, month, desc(rolling_cum_return))
+rolling_returns <- filter(rolling_returns, !is.na(rolling_cum_return))
+
+# If not yet done
+rolling_returns <- rolling_returns %>%
+  mutate(year = year(month))
+
+  # Filter only the December data for each year to form portfolios
+rebalance_dates <- rolling_returns %>%
+  filter(month(month) == 12)  # December data only
+
+# For each year, assign positions
+portfolio_positions <- rebalance_dates %>%
+  group_by(year) %>%
+  mutate(
+    n_stocks = n(),
+    rank = rank(desc(rolling_cum_return), ties.method = "first"),
+    pct_rank = rank / n_stocks,
+    position = case_when(
+      pct_rank <= 0.10 ~ -1,    # Short top 10%
+      pct_rank >= 0.90 ~ 1,   # Long bottom 10%
+      TRUE ~ 0                # Neutral
+    )
+  ) %>%
+  select(symbol, year, position) %>%
+  ungroup()
+
+# Again, create a 'year' column in the returns data
+monthly_excess <- monthly_excess %>%
+  mutate(year = year(month))
+
+# Merge positions
+returns_with_positions <- monthly_excess %>%
+  left_join(portfolio_positions, by = c("symbol", "year"))
+
+# Fill forward the positions through the year
+# (positions selected in December are applied in the NEXT year — adjust if needed)
+returns_with_positions <- returns_with_positions %>%
+  group_by(symbol) %>%
+  mutate(position = lag(position)) %>%   # because December selection applies from January
+  ungroup()
+
+# Calculate monthly portfolio return
+portfolio_returns <- returns_with_positions %>%
+  filter(!is.na(position)) %>%   # Remove stocks without position
+  group_by(month) %>%
+  summarize(
+    portfolio_ret = mean(position * excess_ret, na.rm = TRUE)  # Equal-weighted
+  ) %>%
+  ungroup()
+
+# Calculate cumulative returns
+portfolio_returns$cum_return <- cumprod(1 + portfolio_returns$portfolio_ret) - 1
+
+# Plot the portfolio returns
+library(ggplot2)
+ggplot(portfolio_returns, aes(x = month, y = cum_return)) +
+  geom_line() +
+  labs(title = "Cumulative Returns of the Portfolio",
+       x = "Month",
+       y = "Cumulative Return") +
+  theme_minimal()
 
 
 
