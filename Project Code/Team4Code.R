@@ -15,7 +15,7 @@ library(PerformanceAnalytics)
 
 # Load FF
 ff_path <- file.path(getwd(), "data/ff_daily.csv")
-ff <- read_csv(ff_path)
+ff <- read.csv(ff_path)
 
 # Convert Date to date
 ff <- mutate(ff, Date = as.Date(as.character(Date), format = "%Y%m%d"))
@@ -25,11 +25,11 @@ ff <- relocate(ff, Date)
 ff <- mutate(ff, across(-Date, ~ .x / 100))
 print(head(ff))
 
-
 # Load your returns.csv
 # returns from yahoo finance --> adjusted close calculated returns
 returns_path <- file.path(getwd(), "returns.csv")
-returns <- read_csv(returns_path)
+returns <- read.csv(returns_path)
+returns$Date <- as.Date(returns$Date)
 print(head(returns))
 
 returns <- select(returns,-GEV,-SOLV,-SW)
@@ -82,40 +82,46 @@ monthly_excess <- summarise(monthly_excess,
 monthly_excess <- arrange(monthly_excess, symbol, month)
 monthly_excess
 
-# Calculate rolling 12 months cumulative return (T-2 to T-13)
-momentum_signal <- group_by(monthly_excess, symbol)
-momentum_signal <- mutate(momentum_signal,
-                          cum_return = slide_index_dbl(
-                            .x = excess_ret,
-                            .i = month,
-                            .f = ~ prod(1 + .x) - 1,
-                            .before = 11,
-                            .complete = TRUE
-                          ))
-momentum_signal <- ungroup(momentum_signal)
+library(zoo)
+library(dplyr)
+
+# Calculate rolling 12 months cummulative returns
+momentum_signal <- monthly_excess %>%
+  group_by(symbol) %>%
+  arrange(month) %>%
+  mutate(
+    rolling_cum_return = rollapply(
+      data = 1 + excess_ret,
+      width = 12,
+      FUN = function(x) prod(x, na.rm = FALSE) - 1,
+      align = "right",
+      fill = NA,
+      partial = FALSE
+    )
+  ) %>%
+  ungroup()
 
 momentum_signal <- group_by(momentum_signal, symbol)
 momentum_signal <- mutate(momentum_signal, formation_month = lead(month, 1))
 momentum_signal <- ungroup(momentum_signal)
-momentum_signal
 
-momentum_signal <- select(momentum_signal, symbol, formation_month, cum_return)
+momentum_signal <- select(momentum_signal, symbol, formation_month, rolling_cum_return)
 momentum_signal <- filter(momentum_signal, !is.na(formation_month))
-momentum_signal <- filter(momentum_signal, !is.na(cum_return))  
+momentum_signal <- filter(momentum_signal, !is.na(rolling_cum_return))  
 
 head(momentum_signal)
 
 # Rank and assign weights for top 10%
 # initial weights are based on momentul signal --> meaning cum return per month
 top10pct_weights <- group_by(momentum_signal, formation_month)
-top10pct_weights <- arrange(top10pct_weights, desc(cum_return))
+top10pct_weights <- arrange(top10pct_weights, desc(rolling_cum_return))
 top10pct_weights <- mutate(top10pct_weights,
                             rank = row_number(),
                             n_stocks = n(),  # total number of stocks in that month
                             threshold = floor(0.10 * n_stocks),  # top 10% (round down)
                             weight = if_else(rank <= threshold, 1 / threshold, 0))
 top10pct_weights <- ungroup(top10pct_weights)
-top10pct_weights <- select(top10pct_weights, symbol, formation_month, cum_return, rank, weight)
+top10pct_weights <- select(top10pct_weights, symbol, formation_month, rolling_cum_return, rank, weight)
 
 head(top10pct_weights)
 
@@ -221,4 +227,37 @@ ggplot(portfolio_returns_daily, aes(x = Date, y = cumulative_return)) +
        x = "Date",
        y = "Cumulative Return") +
   theme_minimal()
+
+mu_portfolio <- mean(portfolio_returns_daily$portfolio_return) * 252
+sd_portfolio <- sd(portfolio_returns_daily$portfolio_return) * sqrt(252)
+sharpe_portfolio <- mu_portfolio / sd_portfolio
+
+print(mu_portfolio)
+print(sd_portfolio)
+print(sharpe_portfolio)
+
+# Merge portfolio with FF factors directly
+merged_data <- merge(portfolio_returns_daily, ff, by = "Date")
+# Now separate
+X <- as.matrix(merged_data[, c("Mkt.RF", "SMB", "HML")])
+y <- merged_data$portfolio_return
+
+#regression
+regression <- lm(y ~ X)
+# Extract alpha and betas
+alpha <- coef(regression)[1]
+betas <- coef(regression)[-1]  # drop intercept
+
+# Portfolio stats (already calculated before but repeat cleanly)
+print(mu_portfolio)
+print(sd_portfolio)
+print(sharpe_portfolio)
+print(alpha * 252)        # Annualized alpha
+print(betas[1])           # Beta to Market
+print(betas[2])           # Beta to SMB
+print(betas[3])           # Beta to HML
+
+
+
+
 
