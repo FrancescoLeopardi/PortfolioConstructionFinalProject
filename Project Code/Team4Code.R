@@ -55,21 +55,32 @@ returns_with_rf <- mutate(returns_with_rf, month = floor_date(Date, unit = "mont
 
 '''monthly_excess <- group_by(returns_with_rf, symbol, month)
 monthly_excess <- slice_tail(monthly_excess, n = 1)  # get the last row in each month
-monthly_excess <- ungroup(monthly_excess)'''
-
+monthly_excess <- ungroup(monthly_excess)
 monthly_excess <- group_by(returns_with_rf, symbol, month)
 monthly_excess <- summarise(monthly_excess,
                             excess_ret = prod(1 + excess_ret) - 1,
                             .groups = "drop")
-
-head(monthly_excess)
+                            '''
+rebalance_months <- arrange(distinct(returns_with_rf, month), month)
+print(rebalance_months)
 
 ####################### MOMENTUM SIGNAL #######################
 install.packages("slider")
 library(slider)
 
 # order monthly excess by symbol and month
+'''monthly_excess <- arrange(monthly_excess, symbol, month)'''
+#daily excess
+daily_excess <- select(returns_with_rf, symbol, Date, month, excess_ret)
+daily_excess <- arrange(daily_excess, symbol, Date)
+
+#monthly excess
+monthly_excess <- group_by(returns_with_rf, symbol, month)
+monthly_excess <- summarise(monthly_excess,
+                            excess_ret = prod(1 + excess_ret) - 1,
+                            .groups = "drop")
 monthly_excess <- arrange(monthly_excess, symbol, month)
+monthly_excess
 
 # Calculate rolling 12 months cumulative return (T-2 to T-13)
 momentum_signal <- group_by(monthly_excess, symbol)
@@ -86,29 +97,16 @@ momentum_signal <- ungroup(momentum_signal)
 momentum_signal <- group_by(momentum_signal, symbol)
 momentum_signal <- mutate(momentum_signal, formation_month = lead(month, 1))
 momentum_signal <- ungroup(momentum_signal)
+momentum_signal
 
 momentum_signal <- select(momentum_signal, symbol, formation_month, cum_return)
 momentum_signal <- filter(momentum_signal, !is.na(formation_month))
-
 momentum_signal <- filter(momentum_signal, !is.na(cum_return))  
 
 head(momentum_signal)
 
-'''# Rank and assign weights
-top3_weights <- momentum_signal |> 
-  group_by(formation_month) |> 
-  arrange(desc(cum_return)) |> 
-  mutate(
-    rank = row_number(),
-    weight = if_else(rank <= 3, 1/3, 0)
-  ) |> 
-  ungroup()
-
-# Check
-head(top3_weights)'''
-
-
 # Rank and assign weights for top 10%
+# initial weights are based on momentul signal --> meaning cum return per month
 top10pct_weights <- group_by(momentum_signal, formation_month)
 top10pct_weights <- arrange(top10pct_weights, desc(cum_return))
 top10pct_weights <- mutate(top10pct_weights,
@@ -129,6 +127,9 @@ top10pct_selected_count <- arrange(top10pct_selected_count, formation_month)
 
 print(top10pct_selected_count)
 print(arrange(top10pct_selected_count, desc(formation_month)))
+
+## Portfolio Return
+
 
 
 
