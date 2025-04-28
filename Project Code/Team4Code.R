@@ -128,15 +128,97 @@ top10pct_selected_count <- arrange(top10pct_selected_count, formation_month)
 print(top10pct_selected_count)
 print(arrange(top10pct_selected_count, desc(formation_month)))
 
-## Portfolio Return
+## Portfolio Return & Rebalancing
+# Create an empty data.frame# Start with empty data frame
+portfolio_returns_daily <- data.frame()
+
+# Attach formation_month to daily_excess
+daily_excess <- mutate(daily_excess, formation_month = floor_date(Date, "month"))
+
+# Create list of rebalance months
+rebalance_months <- sort(unique(top10pct_weights$formation_month))
 
 
+# Start with empty data frame
+portfolio_returns_daily <- data.frame()
 
+# Attach formation_month to daily_excess
+daily_excess <- mutate(daily_excess, formation_month = floor_date(Date, "month"))
 
+# Create list of rebalance months
+rebalance_months <- sort(unique(top10pct_weights$formation_month))
 
+# Loop over each rebalance month
+for (month in rebalance_months) {
+  
+  month <- as.Date(month)  # Force month to be Date
+  
+  beg <- month
+  end <- ceiling_date(beg, "month") - days(1)
+  
+  # Filter daily returns for the month
+  ret_month <- filter(daily_excess, Date >= beg & Date <= end)
+  
+  if (nrow(ret_month) == 0) next  # Skip if no data
+  
+  # Select needed columns only
+  ret_month <- select(ret_month, Date, symbol, excess_ret)
+  
+  # Pivot wider: one stock per column
+  ret_month_wide <- pivot_wider(ret_month, names_from = symbol, values_from = excess_ret)
+  
+  # Extract dates and fix
+  dates <- ret_month_wide$Date
+  dates <- as.Date(dates)
+  
+  # Build return matrix
+  ret_month_matrix <- as.matrix(select(ret_month_wide, -Date))
+  
+  # Compute cumulative returns
+  cum_month <- apply(1 + ret_month_matrix, 2, cumprod)
+  
+  # Shift cumulative returns by 1 day
+  cum_month <- rbind(rep(1, ncol(cum_month)), cum_month[-nrow(cum_month), ])
+  
+  # Get initial weights for this month
+  ini_weight_df <- filter(top10pct_weights, formation_month == month)
+  
+  weight_vector <- rep(0, ncol(cum_month))
+  names(weight_vector) <- colnames(cum_month)
+  weight_vector[ini_weight_df$symbol] <- ini_weight_df$weight
+  
+  # Apply weights
+  month_weights <- sweep(cum_month, 2, weight_vector, "*")
+  
+  # Calculate weighted portfolio return
+  ret_portfolio <- rowSums(month_weights * ret_month_matrix, na.rm = TRUE)
+  
+  # Save this month's returns
+  new_returns <- data.frame(Date = dates, portfolio_return = ret_portfolio)
+  
+  # rbind (base R only)
+  portfolio_returns_daily <- rbind(portfolio_returns_daily, new_returns)
+}
 
+# Arrange final result
+portfolio_returns_daily <- arrange(portfolio_returns_daily, Date)
 
+# View first few rows
+head(portfolio_returns_daily)
 
+# graph of returns
 
+# Load necessary library
+library(ggplot2)
 
+# Calculate cumulative portfolio value
+portfolio_returns_daily <- mutate(portfolio_returns_daily, cumulative_return = cumprod(1 + portfolio_return))
+
+# Plot
+ggplot(portfolio_returns_daily, aes(x = Date, y = cumulative_return)) +
+  geom_line(color = "blue") +
+  labs(title = "Cumulative Portfolio Return Over Time",
+       x = "Date",
+       y = "Cumulative Return") +
+  theme_minimal()
 
