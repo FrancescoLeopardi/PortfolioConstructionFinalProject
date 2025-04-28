@@ -7,11 +7,12 @@
 # Load packages
 install.packages("tidyverse")
 install.packages("lubridate")
-install.packages("PerformanceAnalytics")
 
 library(tidyverse)
 library(lubridate)
-library(PerformanceAnalytics)
+library(zoo)
+library(dplyr)
+
 
 # Load FF
 ff_path <- file.path(getwd(), "data/ff_daily.csv")
@@ -81,9 +82,6 @@ monthly_excess <- summarise(monthly_excess,
                             .groups = "drop")
 monthly_excess <- arrange(monthly_excess, symbol, month)
 monthly_excess
-
-library(zoo)
-library(dplyr)
 
 # Calculate rolling 12 months cummulative returns
 momentum_signal <- monthly_excess %>%
