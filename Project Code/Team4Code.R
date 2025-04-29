@@ -217,13 +217,19 @@ head(long_momentum_portfolio_returns_daily)
 # Calculate cumulative portfolio value
 long_momentum_portfolio_returns_daily <- mutate(long_momentum_portfolio_returns_daily, cumulative_return = cumprod(1 + portfolio_return))
 
-# Plot
-ggplot(long_momentum_portfolio_returns_daily, aes(x = Date, y = cumulative_return)) +
+p <- ggplot(long_momentum_portfolio_returns_daily, aes(x = Date, y = cumulative_return)) +
   geom_line(color = "blue") +
   labs(title = "Cumulative Portfolio Return Over Time",
        x = "Date",
        y = "Cumulative Return") +
-  theme_minimal()
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),  # background outside the plot
+    panel.background = element_rect(fill = "white", color = NA)  # background inside the plot
+  )
+
+# Save the plot
+ggsave("long_momentum_cumulative_return_plot.png", plot = p, width = 8, height = 5, dpi = 300)
 
 mu_portfolio <- mean(long_momentum_portfolio_returns_daily$portfolio_return) * 252
 sd_portfolio <- sd(long_momentum_portfolio_returns_daily$portfolio_return) * sqrt(252)
@@ -338,10 +344,21 @@ portfolio_returns_daily <- portfolio_returns_daily %>%
   mutate(cumulative_return = cumprod(1 + portfolio_return))
 
 # 6. Plot
-ggplot(portfolio_returns_daily, aes(x = Date, y = cumulative_return)) +
+# Create the plot with white background
+p <- ggplot(portfolio_returns_daily, aes(x = Date, y = cumulative_return)) +
   geom_line(color = "blue") +
-  labs(title = "Long-Short Momentum Portfolio", x = "Date", y = "Cumulative Return") +
-  theme_minimal()
+  labs(title = "Long-Short Momentum Portfolio", 
+       x = "Date", 
+       y = "Cumulative Return") +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA)
+  )
+
+# Save the plot
+ggsave("momentum_long_short_returns.png", plot = p, width = 8, height = 5, dpi = 300)
+
 
 # 7. Portfolio statistics
 mu_portfolio <- mean(portfolio_returns_daily$portfolio_return) * 252
@@ -367,9 +384,6 @@ print(alpha * 252)  # Annualized alpha
 print(betas[1])     # Beta to Market
 print(betas[2])     # Beta to SMB
 print(betas[3])     # Beta to HML
-
-
-####################### Winners&Losers SIGNAL #######################
 
 ####################### Winners&Losers SIGNAL #######################
 
@@ -466,12 +480,19 @@ portfolio_returns <- portfolio_returns %>%
   mutate(cum_return = cumprod(1 + portfolio_ret) - 1)
 
 # --- Step 8: Plot ---
-ggplot(portfolio_returns, aes(x = month, y = cum_return)) +
+p <- ggplot(portfolio_returns, aes(x = month, y = cum_return)) +
   geom_line() +
   labs(title = "Cumulative Returns of the Portfolio (3-Year Rebalancing)",
        x = "Month",
        y = "Cumulative Return") +
-  theme_minimal()
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA)
+  )
+
+# Save the plot
+ggsave("long_short_reversal_portfolio_cumulative_3yr.png", plot = p, width = 8, height = 5, dpi = 300)
 
 # Calculate statistics
 mu_portfolio <- mean(portfolio_returns$portfolio_ret, na.rm = TRUE) * 12
@@ -504,4 +525,112 @@ print(alpha * 12)   # Annualized alpha
 print(betas[1])     # Beta to Market
 print(betas[2])     # Beta to SMB
 print(betas[3])     # Beta to HML
+
+#########################################
+######## Mean Reversal - Long only #################
+#########################################
+
+print(head(ff))
+
+print(head(returns_with_rf))
+
+#daily excess
+daily_excess 
+
+# Monthly excess
+monthly_excess
+
+# Calculate the rolling 36 month performance for each stock
+
+#monthly excess
+monthly_excess <- group_by(returns_with_rf, symbol, month)
+monthly_excess <- summarise(monthly_excess,
+                            excess_ret = prod(1 + excess_ret) - 1,
+                            .groups = "drop")
+monthly_excess <- arrange(monthly_excess, symbol, month)
+monthly_excess
+
+rolling_returns <- monthly_excess %>%
+  group_by(symbol) %>%
+  arrange(month) %>%
+  mutate(
+    rolling_cum_return = rollapply(
+      data = 1 + excess_ret,
+      width = 36,
+      FUN = function(x) prod(x, na.rm = FALSE) - 1,
+      align = "right",
+      fill = NA,
+      partial = FALSE
+    )
+  ) %>%
+  ungroup()
+
+rolling_returns <- group_by(rolling_returns, symbol, month)
+rolling_returns <- arrange(rolling_returns, symbol, month)
+rolling_returns <- select(rolling_returns, symbol, month, rolling_cum_return)
+
+# Rearrange for each month
+rolling_returns <- arrange(rolling_returns, month, desc(rolling_cum_return))
+rolling_returns <- filter(rolling_returns, !is.na(rolling_cum_return))
+
+# If not yet done
+rolling_returns <- rolling_returns %>%
+  mutate(year = year(month))
+
+  # Filter only the December data for each year to form portfolios
+rebalance_dates <- rolling_returns %>%
+  filter(month(month) == 12, year %% 3 == 0)
+
+# For each year, assign positions
+portfolio_positions <- rebalance_dates %>%
+  group_by(year) %>%
+  mutate(
+    n_stocks = n(),
+    rank = rank(desc(rolling_cum_return), ties.method = "first"),
+    pct_rank = rank / n_stocks,
+    position = case_when(
+      pct_rank >= 0.90 ~ 1,   # Long bottom 10%
+      TRUE ~ 0                # Neutral
+    )
+  ) %>%
+  select(symbol, year, position) %>%
+  ungroup()
+
+returns_with_positions <- monthly_excess %>%
+  mutate(year = year(month)) %>%
+  left_join(portfolio_positions, by = c("symbol", "year")) %>%
+  arrange(symbol, month)
+
+# Fill forward the positions through the year
+# (positions selected in December are applied in the NEXT year — adjust if needed)
+returns_with_positions <- returns_with_positions %>%
+  group_by(symbol) %>%
+  mutate(position = lag(position)) %>%  # December selection applied from January
+  fill(position, .direction = "down") %>%  # Fill 36 months
+  ungroup()
+  
+# Calculate monthly portfolio return
+portfolio_returns <- returns_with_positions %>%
+  filter(!is.na(position)) %>%
+  group_by(month) %>%
+  summarize(portfolio_ret = mean(position * excess_ret, na.rm = TRUE)) %>%
+  ungroup()
+
+# Calculate cumulative returns
+portfolio_returns <- portfolio_returns %>%
+  mutate(cum_return = cumprod(1 + portfolio_ret) - 1)
+
+p <- ggplot(portfolio_returns, aes(x = month, y = cum_return)) +
+  geom_line() +
+  labs(title = "Cumulative Returns of the Portfolio (3-Year Rebalancing)",
+       x = "Month",
+       y = "Cumulative Return") +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA)
+  )
+
+# Save the plot
+ggsave("mean_reversal_long_short_cumulative_returns.png", plot = p, width = 8, height = 5, dpi = 300)
 
