@@ -338,14 +338,14 @@ for (month in rebalance_months) {
 }
 
 # 5. Final portfolio arrangement
-portfolio_returns_daily <- portfolio_returns_daily %>%
+momentum_long_short_portfolio_returns_daily <- portfolio_returns_daily %>%
   arrange(Date) %>%
   filter(!is.na(portfolio_return), is.finite(portfolio_return)) %>%
   mutate(cumulative_return = cumprod(1 + portfolio_return))
 
 # 6. Plot
 # Create the plot with white background
-p <- ggplot(portfolio_returns_daily, aes(x = Date, y = cumulative_return)) +
+p <- ggplot(momentum_long_short_portfolio_returns_daily, aes(x = Date, y = cumulative_return)) +
   geom_line(color = "blue") +
   labs(title = "Long-Short Momentum Portfolio", 
        x = "Date", 
@@ -637,7 +637,7 @@ ggsave("mean_reversal_long_short_cumulative_returns.png", plot = p, width = 8, h
 
 
 
-############################################## Long only mean reversal #############
+############################################## Long only mean reversal ##############################################
 
 # --- Step 1: Load and prepare daily excess returns ---
 # Assumes 'returns_with_rf' is your dataframe with columns: Date, symbol, excess_ret
@@ -720,3 +720,274 @@ p <- ggplot(long_only_mean_reversal_portfolio_returns_daily, aes(x = Date, y = c
 
 # --- Step 8: Save plot ---
 ggsave("long_only_mean_reversal_daily_mean_reversion_cumulative_returns.png", plot = p, width = 8, height = 5, dpi = 300)
+
+mu_portfolio <- mean(long_only_mean_reversal_portfolio_returns_daily$portfolio_ret, na.rm = TRUE) * 252
+sd_portfolio <- sd(long_only_mean_reversal_portfolio_returns_daily$portfolio_ret, na.rm = TRUE) * sqrt(252)
+sharpe_portfolio <- mu_portfolio / sd_portfolio
+
+print(mu_portfolio)      # Annualized mean return
+print(sd_portfolio)      # Annualized volatility
+print(sharpe_portfolio)  # Sharpe ratio
+
+# --- Step 10: Regression on Fama-French factors ---
+# Assumes 'ff' has daily Fama-French factors with column Date
+merged_data <- merge(long_only_mean_reversal_portfolio_returns_daily, ff, by.x = "Date", by.y = "Date")
+
+X <- as.matrix(merged_data[, c("Mkt.RF", "SMB", "HML")])
+y <- merged_data$portfolio_ret
+
+regression <- lm(y ~ X)
+
+alpha <- coef(regression)[1]
+betas <- coef(regression)[-1]
+
+print(alpha * 252)   # Annualized alpha
+print(betas[1])      # Beta to Market
+print(betas[2])      # Beta to SMB
+print(betas[3])      # Beta to HML
+
+
+
+
+
+
+
+####################### Mean Reversal - Long & Short ###############################
+
+# --- Step 1: Prepare daily excess returns ---
+returns_with_rf <- returns_with_rf %>%
+  mutate(Date = as.Date(Date))
+
+daily_excess <- returns_with_rf
+
+# --- Step 2: Calculate 3-year (756-day) rolling cumulative returns ---
+rolling_returns <- daily_excess %>%
+  group_by(symbol) %>%
+  arrange(Date) %>%
+  mutate(
+    rolling_cum_return = rollapply(
+      data = 1 + excess_ret,
+      width = 756,
+      FUN = function(x) prod(x, na.rm = FALSE) - 1,
+      align = "right",
+      fill = NA
+    )
+  ) %>%
+  ungroup()
+
+# --- Step 3: Assign year and find rebalance dates ---
+rolling_returns <- rolling_returns %>%
+  mutate(year = year(Date))
+
+rebalance_dates <- rolling_returns %>%
+  filter(month(Date) == 12) %>%
+  group_by(symbol, year) %>%
+  filter(Date == max(Date)) %>%
+  ungroup() %>%
+  filter(year %% 3 == 0)
+
+# --- Step 4: Assign positions ---
+portfolio_positions <- rebalance_dates %>%
+  group_by(year) %>%
+  mutate(
+    n_stocks = n(),
+    rank = rank(desc(rolling_cum_return), ties.method = "first"),
+    pct_rank = rank / n_stocks,
+    position = case_when(
+      pct_rank <= 0.10 ~ -1,
+      pct_rank >= 0.90 ~ 1,
+      TRUE ~ 0
+    )
+  ) %>%
+  select(symbol, year, position) %>%
+  ungroup()
+
+# --- Step 5: Merge with returns and apply positions forward ---
+returns_with_positions <- daily_excess %>%
+  mutate(year = year(Date)) %>%
+  left_join(portfolio_positions, by = c("symbol", "year")) %>%
+  group_by(symbol) %>%
+  arrange(Date) %>%
+  mutate(position = lag(position)) %>%
+  fill(position, .direction = "down") %>%
+  ungroup()
+
+# --- Step 6: Daily portfolio returns ---
+long_short_reversal_portfolio_returns_daily <- returns_with_positions %>%
+  filter(!is.na(position)) %>%
+  group_by(Date) %>%
+  summarize(portfolio_ret = mean(position * excess_ret, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(cum_return = cumprod(1 + portfolio_ret) - 1)
+
+# --- Step 7: Plot ---
+p <- ggplot(long_short_reversal_portfolio_returns_daily, aes(x = Date, y = cum_return)) +
+  geom_line(color = "blue") +
+  labs(title = "Cumulative Daily Returns: Long-Short Reversal Strategy",
+       x = "Date",
+       y = "Cumulative Return") +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA)
+  )
+
+ggsave("long_short_reversal_portfolio_daily.png", plot = p, width = 8, height = 5, dpi = 300)
+
+# --- Step 8: Statistics ---
+mu_portfolio <- mean(portfolio_returns_daily$portfolio_ret, na.rm = TRUE) * 252
+sd_portfolio <- sd(portfolio_returns_daily$portfolio_ret, na.rm = TRUE) * sqrt(252)
+sharpe_portfolio <- mu_portfolio / sd_portfolio
+
+print(mu_portfolio)      # Annualized mean return
+print(sd_portfolio)      # Annualized volatility
+print(sharpe_portfolio)  # Sharpe ratio
+
+# --- Step 9: Regression on Fama-French factors ---
+# Assume 'ff' has daily Fama-French factors with column Date
+merged_data <- merge(portfolio_returns_daily, ff, by.x = "Date", by.y = "Date")
+
+X <- as.matrix(merged_data[, c("Mkt.RF", "SMB", "HML")])
+y <- merged_data$portfolio_ret
+
+regression <- lm(y ~ X)
+
+alpha <- coef(regression)[1]
+betas <- coef(regression)[-1]
+
+print(alpha * 252)   # Annualized alpha
+print(betas[1])      # Beta to Market
+print(betas[2])      # Beta to SMB
+print(betas[3])      # Beta to HML
+
+####################################### Aggregation ##########################################
+
+#creating a joint strategy 50% invested in momentum and 50% invested in reversal long only
+
+momentum <- long_momentum_portfolio_returns_daily %>%
+  rename(momentum_ret = portfolio_return)
+
+reversal <- long_only_mean_reversal_portfolio_returns_daily %>%
+  rename(reversal_ret = portfolio_ret)
+
+momentum$Date <- as.Date(momentum$Date)
+reversal$Date <- as.Date(reversal$Date)
+
+long_only_combined_returns <- inner_join(momentum, reversal, by = "Date")
+
+# Take 50% of each strategy
+long_only_combined_returns <- long_only_combined_returns %>%
+  mutate(
+    portfolio_ret = 0.5 * momentum_ret + 0.5 * reversal_ret
+  ) %>%
+  select(Date, portfolio_ret)
+
+# Optional: compute cumulative return
+long_only_combined_returns <- long_only_combined_returns %>%
+  mutate(cum_return = cumprod(1 + portfolio_ret) - 1)
+
+# Plot it
+p <- ggplot(long_only_combined_returns, aes(x = Date, y = cum_return)) +
+  geom_line(color = "blue") +
+  labs(title = "Combined Portfolio (Momentum + Reversal)",
+       x = "Date", y = "Cumulative Return") +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA)
+  )
+
+ggsave("long_only_aggregate_portfolio_daily.png", plot = p, width = 8, height = 5, dpi = 300)
+
+
+mu_portfolio <- mean(long_only_combined_returns$portfolio_ret, na.rm = TRUE) * 252
+sd_portfolio <- sd(long_only_combined_returns$portfolio_ret, na.rm = TRUE) * sqrt(252)
+sharpe_portfolio <- mu_portfolio / sd_portfolio
+
+print(mu_portfolio)      # Annualized mean return
+print(sd_portfolio)      # Annualized volatility
+print(sharpe_portfolio)  # Sharpe ratio
+
+# --- Step 9: Regression on Fama-French factors ---
+# Assume 'ff' has daily Fama-French factors with column Date
+merged_data <- merge(long_only_combined_returns, ff, by.x = "Date", by.y = "Date")
+
+X <- as.matrix(merged_data[, c("Mkt.RF", "SMB", "HML")])
+y <- merged_data$portfolio_ret
+
+regression <- lm(y ~ X)
+
+alpha <- coef(regression)[1]
+betas <- coef(regression)[-1]
+
+print(alpha * 252)   # Annualized alpha
+print(betas[1])      # Beta to Market
+print(betas[2])      # Beta to SMB
+print(betas[3])      # Beta to HML
+
+
+
+################################ Combination Long Short ############
+
+momentum <- momentum_long_short_portfolio_returns_daily %>%
+  rename(momentum_ret = portfolio_return)
+
+reversal <- long_short_reversal_portfolio_returns_daily %>%
+  rename(reversal_ret = portfolio_ret)
+
+momentum$Date <- as.Date(momentum$Date)
+reversal$Date <- as.Date(reversal$Date)
+
+long_short_combined_returns <- inner_join(momentum, reversal, by = "Date")
+
+# Take 50% of each strategy
+long_short_combined_returns <- long_short_combined_returns %>%
+  mutate(
+    portfolio_ret = 0.5 * momentum_ret + 0.5 * reversal_ret
+  ) %>%
+  select(Date, portfolio_ret)
+
+# Optional: compute cumulative return
+long_short_combined_returns <- long_short_combined_returns %>%
+  mutate(cum_return = cumprod(1 + portfolio_ret) - 1)
+
+# Plot it
+p <- ggplot(long_short_combined_returns, aes(x = Date, y = cum_return)) +
+  geom_line(color = "blue") +
+  labs(title = "Combined Portfolio (Momentum + Reversal)",
+       x = "Date", y = "Cumulative Return") +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA)
+  )
+
+ggsave("long_short_aggregate_portfolio_daily.png", plot = p, width = 8, height = 5, dpi = 300)
+
+
+mu_portfolio <- mean(long_short_combined_returns$portfolio_ret, na.rm = TRUE) * 252
+sd_portfolio <- sd(long_short_combined_returns$portfolio_ret, na.rm = TRUE) * sqrt(252)
+sharpe_portfolio <- mu_portfolio / sd_portfolio
+
+print(mu_portfolio)      # Annualized mean return
+print(sd_portfolio)      # Annualized volatility
+print(sharpe_portfolio)  # Sharpe ratio
+
+# --- Step 9: Regression on Fama-French factors ---
+# Assume 'ff' has daily Fama-French factors with column Date
+merged_data <- merge(long_short_combined_returns, ff, by.x = "Date", by.y = "Date")
+
+X <- as.matrix(merged_data[, c("Mkt.RF", "SMB", "HML")])
+y <- merged_data$portfolio_ret
+
+regression <- lm(y ~ X)
+
+alpha <- coef(regression)[1]
+betas <- coef(regression)[-1]
+
+print(alpha * 252)   # Annualized alpha
+print(betas[1])      # Beta to Market
+print(betas[2])      # Beta to SMB
+print(betas[3])      # Beta to HML
+
+
