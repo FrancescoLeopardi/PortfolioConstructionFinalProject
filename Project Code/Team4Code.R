@@ -207,34 +207,35 @@ for (month in rebalance_months) {
 }
 
 # Arrange final result
-portfolio_returns_daily <- arrange(portfolio_returns_daily, Date)
+long_momentum_portfolio_returns_daily <- arrange(portfolio_returns_daily, Date)
 
 # View first few rows
-head(portfolio_returns_daily)
+head(long_momentum_portfolio_returns_daily)
 
 # graph of returns
 
 # Calculate cumulative portfolio value
-portfolio_returns_daily <- mutate(portfolio_returns_daily, cumulative_return = cumprod(1 + portfolio_return))
+long_momentum_portfolio_returns_daily <- mutate(long_momentum_portfolio_returns_daily, cumulative_return = cumprod(1 + portfolio_return))
 
 # Plot
-ggplot(portfolio_returns_daily, aes(x = Date, y = cumulative_return)) +
+ggplot(long_momentum_portfolio_returns_daily, aes(x = Date, y = cumulative_return)) +
   geom_line(color = "blue") +
   labs(title = "Cumulative Portfolio Return Over Time",
        x = "Date",
        y = "Cumulative Return") +
   theme_minimal()
 
-mu_portfolio <- mean(portfolio_returns_daily$portfolio_return) * 252
-sd_portfolio <- sd(portfolio_returns_daily$portfolio_return) * sqrt(252)
+mu_portfolio <- mean(long_momentum_portfolio_returns_daily$portfolio_return) * 252
+sd_portfolio <- sd(long_momentum_portfolio_returns_daily$portfolio_return) * sqrt(252)
 sharpe_portfolio <- mu_portfolio / sd_portfolio
+mean(ret_portfolio)
 
 print(mu_portfolio)
 print(sd_portfolio)
 print(sharpe_portfolio)
 
 # Merge portfolio with FF factors directly
-merged_data <- merge(portfolio_returns_daily, ff, by = "Date")
+merged_data <- merge(long_momentum_portfolio_returns_daily, ff, by = "Date")
 # Now separate
 X <- as.matrix(merged_data[, c("Mkt.RF", "SMB", "HML")])
 y <- merged_data$portfolio_return
@@ -255,97 +256,94 @@ print(betas[2])           # Beta to SMB
 print(betas[3])           # Beta to HML
 
 ######################## Momentum Long & Short ##############################
+#########################################
+# Momentum Long-Short Portfolio
+#########################################
 
-# First, still rank stocks each month
+# 1. Rank stocks each formation month
 momentum_ranked <- momentum_signal %>%
   group_by(formation_month) %>%
   arrange(desc(rolling_cum_return)) %>%
   mutate(
     rank = row_number(),
     n_stocks = n(),
-    threshold = floor(0.10 * n_stocks)  # 10% threshold
+    threshold = floor(0.10 * n_stocks)  # Top and bottom 10%
   ) %>%
   ungroup()
 
-# Then assign weights:
+# 2. Assign weights: +1/top 10%, -1/bottom 10%, 0 otherwise
 long_short_weights <- momentum_ranked %>%
   mutate(
     weight = case_when(
-      rank <= threshold ~ 1 / threshold,        # Top 10% --> positive weight
-      rank > n_stocks - threshold ~ -1 / threshold,  # Bottom 10% --> negative weight
-      TRUE ~ 0    # Neutral stocks
+      rank <= threshold ~ 1 / threshold,         # Long top 10%
+      rank > n_stocks - threshold ~ -1 / threshold, # Short bottom 10%
+      TRUE ~ 0
     )
   ) %>%
-  select(symbol, formation_month, rolling_cum_return, rank, weight)
+  select(symbol, formation_month, weight)
 
-head(long_short_weights)
-
-# Start with empty data frame
+# 3. Initialize daily portfolio returns
 portfolio_returns_daily <- data.frame()
 
-# Attach formation_month to daily_excess
-daily_excess <- mutate(daily_excess, formation_month = floor_date(Date, "month"))
+# Make sure daily_excess has formation_month
+daily_excess <- daily_excess %>%
+  mutate(formation_month = floor_date(Date, "month"))
 
-# Create list of rebalance months
-rebalance_months <- sort(unique(long_short_weights$formation_month))  # ⚡️ USE long_short_weights
+# List of rebalance months
+rebalance_months <- sort(unique(long_short_weights$formation_month))
 
-# Loop over each rebalance month
+# 4. Loop over rebalance months
 for (month in rebalance_months) {
   
-  month <- as.Date(month)
-  
-  beg <- month
+  beg <- as.Date(month)
   end <- ceiling_date(beg, "month") - days(1)
   
-  # Filter daily returns for the month
-  ret_month <- filter(daily_excess, Date >= beg & Date <= end)
+  # Subset daily returns for this month
+  ret_month <- daily_excess %>%
+    filter(Date >= beg & Date <= end)
   
-  if (nrow(ret_month) == 0) next  # Skip if no data
+  if (nrow(ret_month) == 0) next
   
-  ret_month <- select(ret_month, Date, symbol, excess_ret)
-  
-  ret_month_wide <- pivot_wider(ret_month, names_from = symbol, values_from = excess_ret)
+  # Pivot wider: one stock per column
+  ret_month_wide <- ret_month %>%
+    pivot_wider(names_from = symbol, values_from = excess_ret)
   
   dates <- ret_month_wide$Date
-  dates <- as.Date(dates)
   
-  ret_month_matrix <- as.matrix(select(ret_month_wide, -Date))
+  # Build clean return matrix
+  ret_matrix <- ret_month_wide %>%
+    select(-Date) %>%
+    mutate(across(everything(), as.numeric)) %>%
+    replace_na(as.list(rep(0, ncol(.)))) %>%
+    as.matrix()
   
-  cum_month <- apply(1 + ret_month_matrix, 2, cumprod)
+  # Get weights for this month
+  ini_weights <- filter(long_short_weights, formation_month == month)
+  weight_vector <- rep(0, ncol(ret_matrix))
+  names(weight_vector) <- colnames(ret_matrix)
+  weight_vector[ini_weights$symbol] <- ini_weights$weight
   
-  cum_month <- rbind(rep(1, ncol(cum_month)), cum_month[-nrow(cum_month), ])
+  # Compute daily portfolio returns
+  ret_portfolio <- as.vector(ret_matrix %*% weight_vector)
   
-  # Get initial weights for this month (⚡️ now from long_short_weights)
-  ini_weight_df <- filter(long_short_weights, formation_month == month)
-  
-  weight_vector <- rep(0, ncol(cum_month))
-  names(weight_vector) <- colnames(cum_month)
-  weight_vector[ini_weight_df$symbol] <- ini_weight_df$weight
-  
-  month_weights <- sweep(cum_month, 2, weight_vector, "*")
-  
-  ret_portfolio <- rowSums(month_weights * ret_month_matrix, na.rm = TRUE)
-  
+  # Store
   new_returns <- data.frame(Date = dates, portfolio_return = ret_portfolio)
-  
   portfolio_returns_daily <- rbind(portfolio_returns_daily, new_returns)
 }
 
-# Arrange
-portfolio_returns_daily <- arrange(portfolio_returns_daily, Date)
+# 5. Final portfolio arrangement
+portfolio_returns_daily <- portfolio_returns_daily %>%
+  arrange(Date) %>%
+  filter(!is.na(portfolio_return), is.finite(portfolio_return)) %>%
+  mutate(cumulative_return = cumprod(1 + portfolio_return))
 
-# Calculate cumulative returns
-portfolio_returns_daily <- mutate(portfolio_returns_daily, cumulative_return = cumprod(1 + portfolio_return))
-
-# Graph
+# 6. Plot
 ggplot(portfolio_returns_daily, aes(x = Date, y = cumulative_return)) +
   geom_line(color = "blue") +
-  labs(title = "Long-Short Momentum: Cumulative Return",
-       x = "Date",
-       y = "Cumulative Return") +
+  labs(title = "Long-Short Momentum Portfolio", x = "Date", y = "Cumulative Return") +
   theme_minimal()
 
-# Portfolio stats
+# 7. Portfolio statistics
 mu_portfolio <- mean(portfolio_returns_daily$portfolio_return) * 252
 sd_portfolio <- sd(portfolio_returns_daily$portfolio_return) * sqrt(252)
 sharpe_portfolio <- mu_portfolio / sd_portfolio
@@ -354,27 +352,24 @@ print(mu_portfolio)
 print(sd_portfolio)
 print(sharpe_portfolio)
 
-# Merge with FF
+# 8. Regression on Fama-French factors
 merged_data <- merge(portfolio_returns_daily, ff, by = "Date")
 
 X <- as.matrix(merged_data[, c("Mkt.RF", "SMB", "HML")])
 y <- merged_data$portfolio_return
 
-# Regression
 regression <- lm(y ~ X)
 
 alpha <- coef(regression)[1]
 betas <- coef(regression)[-1]
 
-# Final prints
-print(mu_portfolio)
-print(sd_portfolio)
-print(sharpe_portfolio)
-print(alpha * 252)        # Annualized alpha
-print(betas[1])           # Beta to Market
-print(betas[2])           # Beta to SMB
-print(betas[3])           # Beta to HML)
+print(alpha * 252)  # Annualized alpha
+print(betas[1])     # Beta to Market
+print(betas[2])     # Beta to SMB
+print(betas[3])     # Beta to HML
 
+
+####################### Winners&Losers SIGNAL #######################
 
 ####################### Winners&Losers SIGNAL #######################
 
@@ -428,7 +423,7 @@ rolling_returns <- rolling_returns %>%
 
   # Filter only the December data for each year to form portfolios
 rebalance_dates <- rolling_returns %>%
-  filter(month(month) == 12)  # December data only
+  filter(month(month) == 12, year %% 3 == 0)
 
 # For each year, assign positions
 portfolio_positions <- rebalance_dates %>%
@@ -446,42 +441,67 @@ portfolio_positions <- rebalance_dates %>%
   select(symbol, year, position) %>%
   ungroup()
 
-# Again, create a 'year' column in the returns data
-monthly_excess <- monthly_excess %>%
-  mutate(year = year(month))
-
-# Merge positions
 returns_with_positions <- monthly_excess %>%
-  left_join(portfolio_positions, by = c("symbol", "year"))
+  mutate(year = year(month)) %>%
+  left_join(portfolio_positions, by = c("symbol", "year")) %>%
+  arrange(symbol, month)
 
 # Fill forward the positions through the year
 # (positions selected in December are applied in the NEXT year — adjust if needed)
 returns_with_positions <- returns_with_positions %>%
   group_by(symbol) %>%
-  mutate(position = lag(position)) %>%   # because December selection applies from January
+  mutate(position = lag(position)) %>%  # December selection applied from January
+  fill(position, .direction = "down") %>%  # Fill 36 months
   ungroup()
-
+  
 # Calculate monthly portfolio return
 portfolio_returns <- returns_with_positions %>%
-  filter(!is.na(position)) %>%   # Remove stocks without position
+  filter(!is.na(position)) %>%
   group_by(month) %>%
-  summarize(
-    portfolio_ret = mean(position * excess_ret, na.rm = TRUE)  # Equal-weighted
-  ) %>%
+  summarize(portfolio_ret = mean(position * excess_ret, na.rm = TRUE)) %>%
   ungroup()
 
 # Calculate cumulative returns
-portfolio_returns$cum_return <- cumprod(1 + portfolio_returns$portfolio_ret) - 1
+portfolio_returns <- portfolio_returns %>%
+  mutate(cum_return = cumprod(1 + portfolio_ret) - 1)
 
-# Plot the portfolio returns
-library(ggplot2)
+# --- Step 8: Plot ---
 ggplot(portfolio_returns, aes(x = month, y = cum_return)) +
   geom_line() +
-  labs(title = "Cumulative Returns of the Portfolio",
+  labs(title = "Cumulative Returns of the Portfolio (3-Year Rebalancing)",
        x = "Month",
        y = "Cumulative Return") +
   theme_minimal()
 
+# Calculate statistics
+mu_portfolio <- mean(portfolio_returns$portfolio_ret, na.rm = TRUE) * 12
+sd_portfolio <- sd(portfolio_returns$portfolio_ret, na.rm = TRUE) * sqrt(12)
+sharpe_portfolio <- mu_portfolio / sd_portfolio
 
 
+print(mu_portfolio)      # Annualized mean return
+print(sd_portfolio)      # Annualized volatility
+print(sharpe_portfolio)  # Sharpe ratio
+
+# --- Step 11: Regression on Fama-French factors ---
+
+# Merge portfolio returns with Fama-French factors
+merged_data <- merge(portfolio_returns, ff, by.x = "month", by.y = "Date")
+
+# Define X (factors) and y (portfolio excess returns)
+X <- as.matrix(merged_data[, c("Mkt.RF", "SMB", "HML")])
+y <- merged_data$portfolio_ret
+
+# Run regression
+regression <- lm(y ~ X)
+
+# Extract alpha and betas
+alpha <- coef(regression)[1]
+betas <- coef(regression)[-1]
+
+# Print results
+print(alpha * 12)   # Annualized alpha
+print(betas[1])     # Beta to Market
+print(betas[2])     # Beta to SMB
+print(betas[3])     # Beta to HML
 
