@@ -54,14 +54,6 @@ returns_with_rf <- mutate(returns_with_rf, month = floor_date(Date, unit = "mont
 
 # For each stock and month, get the cummulative monthly excess return
 
-'''monthly_excess <- group_by(returns_with_rf, symbol, month)
-monthly_excess <- slice_tail(monthly_excess, n = 1)  # get the last row in each month
-monthly_excess <- ungroup(monthly_excess)
-monthly_excess <- group_by(returns_with_rf, symbol, month)
-monthly_excess <- summarise(monthly_excess,
-                            excess_ret = prod(1 + excess_ret) - 1,
-                            .groups = "drop")
-                            '''
 rebalance_months <- arrange(distinct(returns_with_rf, month), month)
 print(rebalance_months)
 
@@ -70,7 +62,6 @@ install.packages("slider")
 library(slider)
 
 # order monthly excess by symbol and month
-'''monthly_excess <- arrange(monthly_excess, symbol, month)'''
 #daily excess
 daily_excess <- select(returns_with_rf, symbol, Date, month, excess_ret)
 daily_excess <- arrange(daily_excess, symbol, Date)
@@ -250,7 +241,10 @@ y <- merged_data$portfolio_return
 regression <- lm(y ~ X)
 # Extract alpha and betas
 alpha <- coef(regression)[1]
-betas <- coef(regression)[-1]  # drop intercept
+betas <- coef(regression)[-1] # drop intercept
+
+residuals <- regression$residuals
+sigma_epsilon <- sqrt(mean(residuals^2))
 
 # Portfolio stats (already calculated before but repeat cleanly)
 print(mu_portfolio)
@@ -259,7 +253,10 @@ print(sharpe_portfolio)
 print(alpha * 252)        # Annualized alpha
 print(betas[1])           # Beta to Market
 print(betas[2])           # Beta to SMB
-print(betas[3])           # Beta to HML
+print(betas[3]) # Beta to HML
+
+information_ratio_momentum_long_only <- alpha / sigma_epsilon
+print(information_ratio_momentum_long_only)
 
 ######################## Momentum Long & Short ##############################
 #########################################
@@ -380,10 +377,16 @@ regression <- lm(y ~ X)
 alpha <- coef(regression)[1]
 betas <- coef(regression)[-1]
 
+residuals <- regression$residuals
+sigma_epsilon <- sqrt(mean(residuals^2))
+
 print(alpha * 252)  # Annualized alpha
 print(betas[1])     # Beta to Market
 print(betas[2])     # Beta to SMB
 print(betas[3])     # Beta to HML
+
+information_ratio_momentum_long_short <- alpha / sigma_epsilon
+print(information_ratio_momentum_long_short)
 
 ############################################## Long only mean reversal ##############################################
 
@@ -489,15 +492,16 @@ regression <- lm(y ~ X)
 alpha <- coef(regression)[1]
 betas <- coef(regression)[-1]
 
+residuals <- regression$residuals
+sigma_epsilon <- sqrt(mean(residuals^2))
+
 print(alpha * 252)   # Annualized alpha
 print(betas[1])      # Beta to Market
 print(betas[2])      # Beta to SMB
 print(betas[3])      # Beta to HML
 
-
-
-
-
+information_ratio_reversal_long_only <- alpha / sigma_epsilon
+print(information_ratio_reversal_long_only)
 
 
 ####################### Mean Reversal - Long & Short ###############################
@@ -603,10 +607,16 @@ regression <- lm(y ~ X)
 alpha <- coef(regression)[1]
 betas <- coef(regression)[-1]
 
+residuals <- regression$residuals
+sigma_epsilon <- sqrt(mean(residuals^2))
+
 print(alpha * 252)   # Annualized alpha
 print(betas[1])      # Beta to Market
 print(betas[2])      # Beta to SMB
 print(betas[3])      # Beta to HML
+
+information_ratio_reversal_long_short <- alpha / sigma_epsilon
+print(information_ratio_reversal_long_short)
 
 ####################################### Aggregation ##########################################
 
@@ -668,12 +678,16 @@ regression <- lm(y ~ X)
 alpha <- coef(regression)[1]
 betas <- coef(regression)[-1]
 
+residuals <- regression$residuals
+sigma_epsilon <- sqrt(mean(residuals^2))
+
 print(alpha * 252)   # Annualized alpha
 print(betas[1])      # Beta to Market
 print(betas[2])      # Beta to SMB
 print(betas[3])      # Beta to HML
 
-
+information_ratio_combined_long_only <- alpha / sigma_epsilon
+print(information_ratio_combined_long_only)
 
 ################################ Combination Long Short ############
 
@@ -733,9 +747,15 @@ regression <- lm(y ~ X)
 alpha <- coef(regression)[1]
 betas <- coef(regression)[-1]
 
+residuals <- regression$residuals
+sigma_epsilon <- sqrt(mean(residuals^2))
+
 print(alpha * 252)   # Annualized alpha
 print(betas[1])      # Beta to Market
 print(betas[2])      # Beta to SMB
 print(betas[3])      # Beta to HML
+
+information_ratio_combined_long_short <- alpha / sigma_epsilon
+print(information_ratio_combined_long_short)
 
 
