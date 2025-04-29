@@ -634,3 +634,89 @@ p <- ggplot(portfolio_returns, aes(x = month, y = cum_return)) +
 # Save the plot
 ggsave("mean_reversal_long_short_cumulative_returns.png", plot = p, width = 8, height = 5, dpi = 300)
 
+
+
+
+############################################## Long only mean reversal #############
+
+# --- Step 1: Load and prepare daily excess returns ---
+# Assumes 'returns_with_rf' is your dataframe with columns: Date, symbol, excess_ret
+
+# Make sure Date is a Date type
+returns_with_rf <- returns_with_rf %>%
+  mutate(Date = as.Date(Date))
+
+# --- Step 2: Calculate 3-year (756-day) rolling cumulative returns ---
+rolling_returns <- returns_with_rf %>%
+  group_by(symbol) %>%
+  arrange(Date) %>%
+  mutate(
+    rolling_cum_return = rollapply(
+      data = 1 + excess_ret,
+      width = 756,  # Approx. 3 years of trading days
+      FUN = function(x) prod(x, na.rm = FALSE) - 1,
+      align = "right",
+      fill = NA
+    )
+  ) %>%
+  ungroup()
+
+# --- Step 3: Assign year and find rebalance dates ---
+rolling_returns <- rolling_returns %>%
+  mutate(year = year(Date))
+
+# Select last available date of December in every 3rd year
+rebalance_dates <- rolling_returns %>%
+  filter(month(Date) == 12) %>%
+  group_by(symbol, year) %>%
+  filter(Date == max(Date)) %>%
+  ungroup() %>%
+  filter(year %% 3 == 0)
+
+# --- Step 4: Assign positions (long bottom 10%) ---
+portfolio_positions <- rebalance_dates %>%
+  group_by(year) %>%
+  mutate(
+    n_stocks = n(),
+    rank = rank(desc(rolling_cum_return), ties.method = "first"),
+    pct_rank = rank / n_stocks,
+    position = case_when(
+      pct_rank >= 0.90 ~ 1,  # Long bottom 10%
+      TRUE ~ 0
+    )
+  ) %>%
+  select(symbol, year, position) %>%
+  ungroup()
+
+# --- Step 5: Merge with full returns and apply positions forward ---
+returns_with_positions <- returns_with_rf %>%
+  mutate(year = year(Date)) %>%
+  left_join(portfolio_positions, by = c("symbol", "year")) %>%
+  group_by(symbol) %>%
+  arrange(Date) %>%
+  mutate(position = lag(position)) %>%  # Apply from January next year
+  fill(position, .direction = "down") %>%
+  ungroup()
+
+# --- Step 6: Compute daily portfolio returns ---
+long_only_mean_reversal_portfolio_returns_daily <- returns_with_positions %>%
+  filter(!is.na(position)) %>%
+  group_by(Date) %>%
+  summarize(portfolio_ret = mean(position * excess_ret, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(cumulative_return = cumprod(1 + portfolio_ret) - 1)
+
+# --- Step 7: Plot cumulative return ---
+p <- ggplot(long_only_mean_reversal_portfolio_returns_daily, aes(x = Date, y = cumulative_return)) +
+  geom_line(color = "blue") +
+  labs(title = "Cumulative Portfolio Return Over Time (Daily)",
+       x = "Date",
+       y = "Cumulative Return") +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA)
+  )
+
+# --- Step 8: Save plot ---
+ggsave("long_only_mean_reversal_daily_mean_reversion_cumulative_returns.png", plot = p, width = 8, height = 5, dpi = 300)
